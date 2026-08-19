@@ -3,7 +3,7 @@ import streamlit as st
 from forensics_core import SecureBlockchain, register_image_bytes, verify_image_bytes
 
 # GANTI sesuai bucket GCS yang sudah kamu buat
-BUCKET_NAME = "nama-bucket-kamu"
+BUCKET_NAME = "gridproof"
 LEDGER_BLOB_PATH = "ledger/opsi_ledger.json"
 
 st.set_page_config(page_title="OPSI — Verifikasi Keaslian Citra", layout="wide")
