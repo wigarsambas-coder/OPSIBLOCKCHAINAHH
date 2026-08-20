@@ -31,6 +31,7 @@ import numpy as np
 import pywt
 import scipy.fftpack as fftpack
 from google.cloud import storage
+from google.oauth2 import service_account
 
 
 # =========================================================================
@@ -221,10 +222,22 @@ class SecureBlockchain:
     supaya ledger gak hilang tiap kali instance Cloud Run/Streamlit restart.
     """
 
-    def __init__(self, bucket_name, blob_path="ledger/opsi_ledger.json"):
+    def __init__(self, bucket_name, blob_path="ledger/opsi_ledger.json", credentials_info=None):
+        """
+        credentials_info: dict isi service account JSON (mis. dari st.secrets),
+        WAJIB diisi kalau dijalankan di luar GCP (Streamlit Cloud, HF Spaces, dll)
+        karena di sana gak ada default credentials otomatis seperti di Cloud Run.
+        """
         self.bucket_name = bucket_name
         self.blob_path = blob_path
-        self._client = storage.Client()
+
+        if credentials_info is not None:
+            credentials = service_account.Credentials.from_service_account_info(credentials_info)
+            self._client = storage.Client(credentials=credentials, project=credentials_info.get("project_id"))
+        else:
+            # Cuma jalan kalau ada default credentials otomatis (mis. di Cloud Run/Compute Engine)
+            self._client = storage.Client()
+
         self._bucket = self._client.bucket(bucket_name)
         self.chain = []
         self.bk_tree = BKTree()
