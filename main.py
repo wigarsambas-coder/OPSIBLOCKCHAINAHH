@@ -3,7 +3,7 @@ import streamlit as st
 from forensics_core import SecureBlockchain, register_image_bytes, verify_image_bytes
 
 # GANTI sesuai bucket GCS yang sudah kamu buat
-BUCKET_NAME = "gridproof"
+BUCKET_NAME = "nama-bucket-kamu"
 LEDGER_BLOB_PATH = "ledger/opsi_ledger.json"
 
 st.set_page_config(page_title="OPSI — Verifikasi Keaslian Citra", layout="wide")
@@ -12,7 +12,10 @@ st.title("🔗 OPSI — Sistem Verifikasi Keaslian Citra")
 
 @st.cache_resource
 def get_blockchain():
-    return SecureBlockchain(bucket_name=BUCKET_NAME, blob_path=LEDGER_BLOB_PATH)
+    # Kredensial GCP diambil dari Streamlit Secrets (Manage app > Settings > Secrets),
+    # WAJIB karena Streamlit Cloud gak punya default credentials otomatis seperti Cloud Run.
+    creds_info = dict(st.secrets["gcp_service_account"])
+    return SecureBlockchain(bucket_name=BUCKET_NAME, blob_path=LEDGER_BLOB_PATH, credentials_info=creds_info)
 
 
 blockchain = get_blockchain()
