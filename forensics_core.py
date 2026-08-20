@@ -291,6 +291,8 @@ class SecureBlockchain:
         new_flat_hash = ("".join([str(h) for row in grid_hashes for h in row])
                           if isinstance(grid_hashes[0], list) else "".join(grid_hashes))
         for block in self.chain[1:]:
+            if block.metadata.get("deleted"):
+                continue
             if not block.grid_hashes:
                 continue
             block_flat_hash = ("".join([str(h) for row in block.grid_hashes for h in row])
@@ -317,6 +319,40 @@ class SecureBlockchain:
         self.bk_tree.insert((new_block.tx_id, new_block.grid_hashes, new_block.metadata, new_block))
         self.save_db()
         return new_block, None
+
+    def soft_delete_block(self, index, deleted_by=None):
+        """
+        Menghapus entri secara LOGIS (soft delete), bukan menghapus fisik dari
+        chain. Ini SENGAJA, bukan kelupaan — kalau block dihapus fisik, previous_hash
+        milik block-block sesudahnya jadi merujuk ke tx_id yang "hilang" dari
+        daftar, sehingga integritas rantai hash gak bisa lagi divalidasi secara
+        berurutan (poin utama pakai struktur blockchain jadi percuma).
+
+        Dengan soft delete: block tetap ada di chain (hash-chain utuh, bisa
+        diaudit), tapi metadata["deleted"]=True membuatnya otomatis dilewati
+        oleh check_duplicate() dan proses pencocokan di verify_image_bytes() —
+        seolah-olah "tidak aktif" tanpa merusak riwayat.
+        """
+        for block in self.chain:
+            if block.index == index:
+                block.metadata["deleted"] = True
+                block.metadata["deleted_at"] = time.time()
+                if deleted_by:
+                    block.metadata["deleted_by"] = deleted_by
+                self.save_db()
+                return True
+        return False
+
+    def restore_block(self, index):
+        """Membatalkan soft delete — mengaktifkan lagi entri yang sempat dihapus."""
+        for block in self.chain:
+            if block.index == index:
+                block.metadata.pop("deleted", None)
+                block.metadata.pop("deleted_at", None)
+                block.metadata.pop("deleted_by", None)
+                self.save_db()
+                return True
+        return False
 
 
 # =========================================================================
@@ -419,6 +455,8 @@ def verify_image_bytes(blockchain, file_bytes, filename):
     min_total_hd = float('inf')
     TOTAL_BITS_STRUKTUR = 16 * 512
     for block in blockchain.chain[1:]:
+        if block.metadata.get("deleted"):
+            continue
         block_grid_hashes = block.grid_hashes
         if not block_grid_hashes:
             continue
