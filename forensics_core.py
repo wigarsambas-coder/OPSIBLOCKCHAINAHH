@@ -1,27 +1,3 @@
-"""
-forensics_core.py
-Logika inti sistem verifikasi citra (perceptual hashing YCbCr + blockchain ledger
-+ deteksi teks HH-subband masked + deteksi resize/kompresi).
-
-Diadaptasi dari notebook Colab-mu (salinan_coba_coba_gaje.py) — dibersihkan dari
-dependensi khusus Colab (!pip install, google.colab.*, plt.show()) supaya bisa
-jalan sebagai modul Python biasa yang dipanggil dari Streamlit.
-
-CATATAN PENTING:
-- Fungsi measure_jpeg_blockiness() TIDAK ADA di file yang kamu upload (kemungkinan
-  didefinisikan di cell Colab yang terpisah/kehapus, tapi masih "nyangkut" di
-  memori runtime pas kamu run manual). Versi di bawah ini adalah REKONSTRUKSI
-  berbasis metode standar "blocking artifact measure" (rasio energi gradien di
-  garis batas blok 8x8 vs di dalam blok).
-  => Threshold TOLERANSI_BLOCKINESS = 1.5 di kodemu KEMUNGKINAN BESAR PERLU
-     DIKALIBRASI ULANG karena skala keluaran fungsi ini belum tentu sama persis
-     dengan fungsi originalmu. Coba jalankan ke beberapa gambar asli vs hasil
-     SKEN-02 (kompresi) dari notebook batch-edit-mu, lihat rentang delta-nya,
-     baru sesuaikan angkanya.
-- Duplikasi pemanggilan blockchain.register_image() di file asli (dulu dipanggil
-  2x berturut-turut untuk gambar yang sama) sudah dihapus di sini, cukup 1x.
-"""
-
 import time
 import json
 import hashlib
@@ -35,7 +11,7 @@ from google.oauth2 import service_account
 
 
 # =========================================================================
-# PRA-PEMROSESAN & HASHING (dari Cell 2 notebook asli — logic tidak diubah)
+# PRE PROCESS & HASHING
 # =========================================================================
 
 def preprocess_image(img):
@@ -145,7 +121,7 @@ def measure_jpeg_blockiness(img, block_size=8):
 
 
 # =========================================================================
-# BK-TREE + BLOCKCHAIN (dari Cell 4) — persistensi dipindah ke GCS
+# BK-TREE & BLOCKCHAIN
 # =========================================================================
 
 class BKTreeNode:
@@ -321,18 +297,7 @@ class SecureBlockchain:
         return new_block, None
 
     def soft_delete_block(self, index, deleted_by=None):
-        """
-        Menghapus entri secara LOGIS (soft delete), bukan menghapus fisik dari
-        chain. Ini SENGAJA, bukan kelupaan — kalau block dihapus fisik, previous_hash
-        milik block-block sesudahnya jadi merujuk ke tx_id yang "hilang" dari
-        daftar, sehingga integritas rantai hash gak bisa lagi divalidasi secara
-        berurutan (poin utama pakai struktur blockchain jadi percuma).
-
-        Dengan soft delete: block tetap ada di chain (hash-chain utuh, bisa
-        diaudit), tapi metadata["deleted"]=True membuatnya otomatis dilewati
-        oleh check_duplicate() dan proses pencocokan di verify_image_bytes() —
-        seolah-olah "tidak aktif" tanpa merusak riwayat.
-        """
+    
         for block in self.chain:
             if block.index == index:
                 block.metadata["deleted"] = True
@@ -344,7 +309,8 @@ class SecureBlockchain:
         return False
 
     def restore_block(self, index):
-        """Membatalkan soft delete — mengaktifkan lagi entri yang sempat dihapus."""
+
+      #Batalin self delete 
         for block in self.chain:
             if block.index == index:
                 block.metadata.pop("deleted", None)
@@ -354,12 +320,9 @@ class SecureBlockchain:
                 return True
         return False
 
-
-# =========================================================================
-# ALUR REGISTRASI & VERIFIKASI — versi "satu gambar", dipanggil dari UI
-# (logic sama seperti loop Cell 5 & Cell 6 asli, tapi tanpa print()/plt.show(),
-#  dan menerima bytes hasil upload alih-alih path file lokal/Drive)
-# =========================================================================
+#---------------
+#Alur registrasi
+#---------------
 
 THRESHOLDS = dict(
     TOLERANSI_BRIGHT=15.0,
