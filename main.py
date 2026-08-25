@@ -81,10 +81,10 @@ if is_admin:
                     else:
                         st.error(f"❌ {hasil['filename']} — gagal dibaca, cek format filenya")
 
-        elif sumber == "Upload ZIP (folder terkompresi)":
+        elif sumber == "Upload ZIP":
             st.caption(
-                "Upload satu file .zip — boleh berisi folder/subfolder bertingkat, "
-                "semua gambar di dalamnya dicari otomatis sedalam apa pun struktur foldernya."
+                "Upload satu file .zip "
+                "semua gambar di dalamnya dicari otomatis"
             )
             zip_file = st.file_uploader("Upload file .zip", type=["zip"], key="upload_zip")
             filter_substring = st.text_input(
