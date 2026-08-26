@@ -81,7 +81,7 @@ if is_admin:
                     else:
                         st.error(f"❌ {hasil['filename']} — gagal dibaca, cek format filenya")
 
-        elif sumber == "Upload ZIP":
+        elif sumber == "Upload ZIP (folder terkompresi)":
             st.caption(
                 "Upload satu file .zip "
                 "semua gambar di dalamnya dicari otomatis"
