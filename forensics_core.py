@@ -349,10 +349,11 @@ THRESHOLDS = dict(
 
 def register_image_bytes(blockchain, file_bytes, filename, source_label="upload"):
     """Daftarkan satu gambar (bytes) ke blockchain. Return dict hasil."""
+    t0 = time.perf_counter()
     arr = np.frombuffer(file_bytes, np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
-        return {"status": "gagal_baca", "filename": filename}
+        return {"status": "gagal_baca", "filename": filename, "durasi_proses": time.perf_counter() - t0}
 
     img_ycbcr = preprocess_image(img)
     grid_hashes, grid_colors = generate_grid_hashes(img_ycbcr, grid_size=4)
@@ -369,6 +370,10 @@ def register_image_bytes(blockchain, file_bytes, filename, source_label="upload"
     h_asli, w_asli = img.shape[:2]
     blockiness_asli = measure_jpeg_blockiness(img, block_size=8)
 
+    # Durasi ANALISIS gambar (belum termasuk waktu upload ke GCS) — ini yang
+    # disimpan PERMANEN ke metadata block, supaya kelihatan di tab Kelola Ledger.
+    durasi_analisis = time.perf_counter() - t0
+
     meta = {
         "filename": filename,
         "source": source_label,
@@ -376,6 +381,7 @@ def register_image_bytes(blockchain, file_bytes, filename, source_label="upload"
         "width": w_asli,
         "height": h_asli,
         "blockiness_score": blockiness_asli,
+        "processing_duration_seconds": round(durasi_analisis, 3),
     }
 
     new_block, existing_block = None, None
@@ -385,24 +391,32 @@ def register_image_bytes(blockchain, file_bytes, filename, source_label="upload"
             text_valid_pixels_map=text_valid_pixels_map, text_variance_map=text_variance_map,
         )
     except RuntimeError as e:
-        return {"status": "gagal_simpan", "filename": filename, "error": str(e)}
+        return {"status": "gagal_simpan", "filename": filename, "error": str(e),
+                "durasi_proses": time.perf_counter() - t0}
+
+    # Durasi TOTAL (termasuk waktu simpan ke GCS) — cuma buat ditampilkan
+    # sekilas di UI batch, TIDAK disimpan ke ledger (beda dari yang di atas).
+    durasi_total = time.perf_counter() - t0
 
     if new_block is not None:
         return {"status": "terdaftar", "filename": filename,
-                "block_index": new_block.index, "tx_id": new_block.tx_id}
+                "block_index": new_block.index, "tx_id": new_block.tx_id,
+                "durasi_proses": durasi_total}
     else:
         orig_file = existing_block.metadata.get("filename", "Unknown")
         return {"status": "duplikat", "filename": filename,
-                "block_index": existing_block.index, "file_asli": orig_file}
+                "block_index": existing_block.index, "file_asli": orig_file,
+                "durasi_proses": durasi_total}
 
 
 def verify_image_bytes(blockchain, file_bytes, filename):
     """Verifikasi satu gambar suspek (bytes) terhadap blockchain. Return dict hasil + overlay RGB array."""
+    t0 = time.perf_counter()
     T = THRESHOLDS
     arr = np.frombuffer(file_bytes, np.uint8)
     img_suspect = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img_suspect is None:
-        return {"status": "gagal_baca", "filename": filename}
+        return {"status": "gagal_baca", "filename": filename, "durasi_proses": time.perf_counter() - t0}
 
     blockiness_suspect = measure_jpeg_blockiness(img_suspect, block_size=8)
     h_orig, w_orig = img_suspect.shape[:2]
@@ -443,11 +457,12 @@ def verify_image_bytes(blockchain, file_bytes, filename):
             best_match_block = block
 
     if best_match_block is None:
-        return {"status": "tidak_cocok", "filename": filename}
+        return {"status": "tidak_cocok", "filename": filename, "durasi_proses": time.perf_counter() - t0}
 
     persen_gap_match = (min_total_hd / TOTAL_BITS_STRUKTUR) * 100
     if persen_gap_match > T["MAX_MATCH_PERCENT"]:
-        return {"status": "tidak_dikenali", "filename": filename, "gap_percent": persen_gap_match}
+        return {"status": "tidak_dikenali", "filename": filename, "gap_percent": persen_gap_match,
+                "durasi_proses": time.perf_counter() - t0}
 
     hash_asli = best_match_block.grid_hashes
     color_asli = best_match_block.grid_colors
@@ -541,6 +556,7 @@ def verify_image_bytes(blockchain, file_bytes, filename):
         "kompresi_bertambah": kompresi_bertambah,
         "delta_blockiness": delta_blockiness,
         "overlay_image": blended,
+        "durasi_proses": time.perf_counter() - t0,
     }
 
 
