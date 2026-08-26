@@ -219,38 +219,39 @@ class SecureBlockchain:
         self.bk_tree = BKTree()
         self.load_db()
 
+    # JANGAN dibungkus try/except-diam-diam lagi di sini — kalau GCS gagal,
+    # error-nya HARUS nyampe ke caller (yang lalu ditangkap di register_image
+    # untuk rollback + dikasih tau ke UI). Ini pernah bikin bug "data ilang
+    # diam-diam" waktu errornya cuma di-print ke log doang.
     def save_db(self):
-        try:
-            data = json.dumps([b.to_dict() for b in self.chain], indent=2)
-            blob = self._bucket.blob(self.blob_path)
-            blob.upload_from_string(data, content_type="application/json")
-        except Exception as e:
-            print(f"[GAGAL SIMPAN LEDGER KE GCS] {e}")
+        data = json.dumps([b.to_dict() for b in self.chain], indent=2)
+        blob = self._bucket.blob(self.blob_path)
+        blob.upload_from_string(data, content_type="application/json")
 
+    # Sama seperti save_db() — HANYA fallback ke genesis kalau blob-nya memang
+    # belum pernah ada (blob.exists() == False). Kalau ada ERROR pas cek/baca
+    # (mis. 403 billing/izin), JANGAN ditangkap diam-diam terus bikin genesis
+    # baru — itu bisa menimpa ledger asli yang sebenarnya masih ada di GCS.
     def load_db(self):
-        try:
-            blob = self._bucket.blob(self.blob_path)
-            if blob.exists():
-                data = json.loads(blob.download_as_text())
-                self.chain = []
-                self.bk_tree = BKTree()
-                for item in data:
-                    b = Block(
-                        item["index"], item["timestamp"], item["grid_hashes"],
-                        item["metadata"], item["previous_hash"],
-                        grid_colors=item.get("grid_colors"),
-                        text_valid_pixels_map=item.get("text_valid_pixels_map"),
-                        text_variance_map=item.get("text_variance_map"),
-                    )
-                    b.tx_id = item.get("tx_id", item.get("hash"))
-                    b.hash = b.tx_id
-                    self.chain.append(b)
-                    if b.index > 0:
-                        self.bk_tree.insert((b.tx_id, b.grid_hashes, b.metadata, b))
-            else:
-                self.create_genesis_block()
-        except Exception as e:
-            print(f"[GAGAL MUAT LEDGER DARI GCS — membuat genesis baru] {e}")
+        blob = self._bucket.blob(self.blob_path)
+        if blob.exists():
+            data = json.loads(blob.download_as_text())
+            self.chain = []
+            self.bk_tree = BKTree()
+            for item in data:
+                b = Block(
+                    item["index"], item["timestamp"], item["grid_hashes"],
+                    item["metadata"], item["previous_hash"],
+                    grid_colors=item.get("grid_colors"),
+                    text_valid_pixels_map=item.get("text_valid_pixels_map"),
+                    text_variance_map=item.get("text_variance_map"),
+                )
+                b.tx_id = item.get("tx_id", item.get("hash"))
+                b.hash = b.tx_id
+                self.chain.append(b)
+                if b.index > 0:
+                    self.bk_tree.insert((b.tx_id, b.grid_hashes, b.metadata, b))
+        else:
             self.create_genesis_block()
 
     def create_genesis_block(self):
@@ -293,11 +294,17 @@ class SecureBlockchain:
         )
         self.chain.append(new_block)
         self.bk_tree.insert((new_block.tx_id, new_block.grid_hashes, new_block.metadata, new_block))
-        self.save_db()
+        try:
+            self.save_db()
+        except Exception as e:
+            # ROLLBACK — batalkan penambahan di memori kalau GCS gagal, biar
+            # state gak "pura-pura sukses" padahal belum benar-benar tersimpan.
+            self.chain.pop()
+            raise RuntimeError(f"Gagal menyimpan ke Google Cloud Storage: {e}") from e
         return new_block, None
 
     def soft_delete_block(self, index, deleted_by=None):
-    
+
         for block in self.chain:
             if block.index == index:
                 block.metadata["deleted"] = True
@@ -310,7 +317,7 @@ class SecureBlockchain:
 
     def restore_block(self, index):
 
-      #Batalin self delete 
+      #Batalin soft delete
         for block in self.chain:
             if block.index == index:
                 block.metadata.pop("deleted", None)
@@ -371,10 +378,14 @@ def register_image_bytes(blockchain, file_bytes, filename, source_label="upload"
         "blockiness_score": blockiness_asli,
     }
 
-    new_block, existing_block = blockchain.register_image(
-        grid_hashes, meta, grid_colors=grid_colors,
-        text_valid_pixels_map=text_valid_pixels_map, text_variance_map=text_variance_map,
-    )
+    new_block, existing_block = None, None
+    try:
+        new_block, existing_block = blockchain.register_image(
+            grid_hashes, meta, grid_colors=grid_colors,
+            text_valid_pixels_map=text_valid_pixels_map, text_variance_map=text_variance_map,
+        )
+    except RuntimeError as e:
+        return {"status": "gagal_simpan", "filename": filename, "error": str(e)}
 
     if new_block is not None:
         return {"status": "terdaftar", "filename": filename,
@@ -531,3 +542,47 @@ def verify_image_bytes(blockchain, file_bytes, filename):
         "delta_blockiness": delta_blockiness,
         "overlay_image": blended,
     }
+
+
+# =========================================================================
+# HELPER ZIP — dipakai bersama oleh tab Registrasi & tab Verifikasi di
+# main.py. JANGAN dihapus — main.py meng-import fungsi ini secara langsung.
+# =========================================================================
+
+VALID_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
+
+
+def extract_images_from_zip(zip_fileobj, filter_substring="", limit=None):
+    """
+    Ekstrak satu file .zip (bisa file-like object dari st.file_uploader) ke folder
+    sementara, cari SEMUA gambar di dalamnya secara rekursif (sedalam apa pun
+    struktur folder/subfolder-nya), opsional filter berdasarkan potongan nama file.
+
+    Return: list of (filename, bytes) — sudah diurutkan berdasarkan nama.
+    """
+    import os
+    import zipfile
+    import tempfile
+
+    hasil = []
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with zipfile.ZipFile(zip_fileobj) as zf:
+            zf.extractall(tmpdir)
+
+        daftar_path = []
+        for root, _, files_ in os.walk(tmpdir):
+            for fn in files_:
+                if not fn.lower().endswith(VALID_IMAGE_EXTENSIONS):
+                    continue
+                if filter_substring and filter_substring.lower() not in fn.lower():
+                    continue
+                daftar_path.append(os.path.join(root, fn))
+        daftar_path = sorted(daftar_path)
+        if limit is not None:
+            daftar_path = daftar_path[: int(limit)]
+
+        for path in daftar_path:
+            with open(path, "rb") as fh:
+                hasil.append((os.path.basename(path), fh.read()))
+
+    return hasil
