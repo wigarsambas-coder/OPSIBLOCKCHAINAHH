@@ -1,4 +1,6 @@
 import streamlit as st
+import datetime
+import time
 
 from forensics_core import (
     SecureBlockchain,
@@ -76,16 +78,22 @@ if is_admin:
                 key="upload_asli",
             )
             if st.button("Daftarkan ke Blockchain", disabled=not files_asli):
+                waktu_mulai_batch = time.time()
                 for f in files_asli:
                     hasil = register_image_bytes(blockchain, f.read(), f.name)
                     if hasil["status"] == "terdaftar":
-                        st.success(f"✅ {hasil['filename']} — terdaftar (Block #{hasil['block_index']})")
+                        st.success(f"✅ {hasil['filename']} — terdaftar (Block #{hasil['block_index']}, {hasil['durasi_proses']:.2f}s)")
                     elif hasil["status"] == "duplikat":
                         st.warning(f"⚠️ {hasil['filename']} — sudah terdaftar sebelumnya sebagai '{hasil['file_asli']}'")
                     elif hasil["status"] == "gagal_simpan":
                         st.error(f"🛑 {hasil['filename']} — GAGAL disimpan ke GCS (data BELUM terdaftar): {hasil['error']}")
                     else:
                         st.error(f"❌ {hasil['filename']} — gagal dibaca, cek format filenya")
+                total_durasi_batch = time.time() - waktu_mulai_batch
+                st.info(
+                    f"⏱️ Selesai dalam {total_durasi_batch:.2f} detik untuk {len(files_asli)} gambar "
+                    f"(rata-rata {total_durasi_batch / max(1, len(files_asli)):.2f} detik/gambar)"
+                )
 
         elif sumber == "Upload ZIP (folder terkompresi)":
             st.caption(
@@ -117,10 +125,13 @@ if is_admin:
 
                     st.write(f"Ditemukan {len(daftar_file)} gambar yang cocok, mendaftarkan...")
                     progress = st.progress(0)
+                    waktu_mulai_batch = time.time()
+                    jumlah_diproses = 0
                     for i, (fname, fbytes) in enumerate(daftar_file):
                         hasil = register_image_bytes(blockchain, fbytes, fname, source_label="zip_upload")
+                        jumlah_diproses += 1
                         if hasil["status"] == "terdaftar":
-                            st.success(f"✅ {hasil['filename']} — Block #{hasil['block_index']}")
+                            st.success(f"✅ {hasil['filename']} — Block #{hasil['block_index']} ({hasil['durasi_proses']:.2f}s)")
                         elif hasil["status"] == "duplikat":
                             st.warning(f"⚠️ {hasil['filename']} — duplikat dari '{hasil['file_asli']}'")
                         elif hasil["status"] == "gagal_simpan":
@@ -130,6 +141,11 @@ if is_admin:
                         else:
                             st.error(f"❌ {hasil['filename']} — gagal dibaca")
                         progress.progress((i + 1) / max(1, len(daftar_file)))
+                    total_durasi_batch = time.time() - waktu_mulai_batch
+                    st.info(
+                        f"⏱️ Selesai dalam {total_durasi_batch:.2f} detik untuk {jumlah_diproses} gambar "
+                        f"(rata-rata {total_durasi_batch / max(1, jumlah_diproses):.2f} detik/gambar)"
+                    )
 
                 except zipfile.BadZipFile:
                     st.error("File yang diupload bukan ZIP yang valid.")
@@ -164,14 +180,17 @@ if is_admin:
 
                         st.write(f"Ditemukan {len(daftar_file)} gambar, mendaftarkan...")
                         progress = st.progress(0)
+                        waktu_mulai_batch = time.time()
+                        jumlah_diproses = 0
                         for i, path in enumerate(daftar_file):
                             with open(path, "rb") as fh:
                                 file_bytes = fh.read()
                             hasil = register_image_bytes(
                                 blockchain, file_bytes, os.path.basename(path), source_label="kaggle"
                             )
+                            jumlah_diproses += 1
                             if hasil["status"] == "terdaftar":
-                                st.success(f"✅ {hasil['filename']} — Block #{hasil['block_index']}")
+                                st.success(f"✅ {hasil['filename']} — Block #{hasil['block_index']} ({hasil['durasi_proses']:.2f}s)")
                             elif hasil["status"] == "duplikat":
                                 st.warning(f"⚠️ {hasil['filename']} — duplikat dari '{hasil['file_asli']}'")
                             elif hasil["status"] == "gagal_simpan":
@@ -181,6 +200,11 @@ if is_admin:
                             else:
                                 st.error(f"❌ {hasil['filename']} — gagal dibaca")
                             progress.progress((i + 1) / max(1, len(daftar_file)))
+                        total_durasi_batch = time.time() - waktu_mulai_batch
+                        st.info(
+                            f"⏱️ Selesai dalam {total_durasi_batch:.2f} detik untuk {jumlah_diproses} gambar "
+                            f"(rata-rata {total_durasi_batch / max(1, jumlah_diproses):.2f} detik/gambar)"
+                        )
 
                 except Exception as e:
                     st.error(f"Gagal mengambil dataset dari Kaggle: {e}")
@@ -229,16 +253,19 @@ with tab_verifikasi:
     if daftar_suspek:
         hasil_list = []
         progress = st.progress(0, text="Memverifikasi...")
+        waktu_mulai_batch = time.time()
         for i, (fname, fbytes) in enumerate(daftar_suspek):
             hasil_list.append(verify_image_bytes(blockchain, fbytes, fname))
             progress.progress((i + 1) / len(daftar_suspek))
+        total_durasi_batch = time.time() - waktu_mulai_batch
         progress.empty()
 
-        # =============== RINGKASAN JUMLAH ===============
+        # =============== RINGKASAN JUMLAH & WAKTU ===============
         jumlah_real = sum(1 for h in hasil_list if h["status"] == "real")
         jumlah_fake = sum(1 for h in hasil_list if h["status"] == "fake")
         jumlah_tidak_dikenali = sum(1 for h in hasil_list if h["status"] in ("tidak_dikenali", "tidak_cocok"))
         jumlah_gagal = sum(1 for h in hasil_list if h["status"] == "gagal_baca")
+        rata_rata_durasi = total_durasi_batch / max(1, len(hasil_list))
 
         st.subheader("📊 Ringkasan")
         c1, c2, c3, c4, c5 = st.columns(5)
@@ -247,22 +274,36 @@ with tab_verifikasi:
         c3.metric("❌ Fake", jumlah_fake)
         c4.metric("❓ Tidak dikenali", jumlah_tidak_dikenali)
         c5.metric("⚠️ Gagal dibaca", jumlah_gagal)
+
+        t1, t2 = st.columns(2)
+        t1.metric("⏱️ Waktu total", f"{total_durasi_batch:.2f} detik")
+        t2.metric("⏱️ Rata-rata / gambar", f"{rata_rata_durasi:.2f} detik")
         st.divider()
 
         # =============== DETAIL PER GAMBAR ===============
         for hasil in hasil_list:
             st.markdown(f"### {hasil['filename']}")
+            durasi_gambar = hasil.get("durasi_proses")
+            durasi_caption = f"⏱️ Diproses dalam {durasi_gambar:.2f} detik" if durasi_gambar is not None else ""
 
             if hasil["status"] == "gagal_baca":
                 st.error("Gagal membaca file gambar.")
+                if durasi_caption:
+                    st.caption(durasi_caption)
             elif hasil["status"] == "tidak_cocok":
                 st.error("Tidak cocok dengan gambar manapun di blockchain.")
+                if durasi_caption:
+                    st.caption(durasi_caption)
             elif hasil["status"] == "tidak_dikenali":
                 st.warning(f"Tidak dikenali — gap kecocokan {hasil['gap_percent']:.1f}% (di atas ambang batas).")
+                if durasi_caption:
+                    st.caption(durasi_caption)
             else:
                 col1, col2 = st.columns([1, 1])
                 with col1:
                     st.image(hasil["overlay_image"], caption="Peta area terindikasi tamper (merah)")
+                    if durasi_caption:
+                        st.caption(durasi_caption)
                 with col2:
                     if hasil["status"] == "fake":
                         st.error("❌ FAKE (Terindikasi dimanipulasi)")
@@ -299,7 +340,11 @@ if is_admin:
                 label = block.metadata.get("filename", "Unknown")
                 st.markdown(f"~~{label}~~ *(dihapus)*" if is_deleted else label)
             with col2:
+                waktu_str = datetime.datetime.fromtimestamp(block.timestamp).strftime("%d/%m/%Y, %H:%M:%S")
+                durasi = block.metadata.get("processing_duration_seconds")
+                durasi_str = f" · diproses dalam {durasi:.2f}s" if durasi is not None else ""
                 st.caption(f"Block #{block.index} · sumber: {block.metadata.get('source', '-')}")
+                st.caption(f"🗓️ {waktu_str}{durasi_str}")
             with col3:
                 if is_deleted:
                     if st.button("Pulihkan", key=f"restore_{block.index}"):
