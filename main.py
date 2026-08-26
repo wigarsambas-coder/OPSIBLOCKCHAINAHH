@@ -1,6 +1,12 @@
 import streamlit as st
 
-from forensics_core import SecureBlockchain, register_image_bytes, verify_image_bytes
+from forensics_core import (
+    SecureBlockchain,
+    register_image_bytes,
+    verify_image_bytes,
+    extract_images_from_zip,
+)
+import zipfile
 
 st.set_page_config(page_title="OPSI — Verifikasi Keaslian Citra", layout="wide")
 
@@ -102,49 +108,28 @@ if is_admin:
             )
 
             if st.button("Ekstrak & Daftarkan dari ZIP", disabled=not zip_file):
-                import os
-                import zipfile
-                import tempfile
-
                 try:
-                    with tempfile.TemporaryDirectory() as tmpdir:
-                        with st.spinner("Mengekstrak ZIP..."):
-                            with zipfile.ZipFile(zip_file) as zf:
-                                zf.extractall(tmpdir)
+                    with st.spinner("Mengekstrak ZIP..."):
+                        daftar_file = extract_images_from_zip(zip_file, filter_substring, batas_gambar_zip)
 
-                        valid_ext = (".jpg", ".jpeg", ".png", ".webp", ".bmp")
-                        daftar_file = []
-                        for root, _, files_ in os.walk(tmpdir):
-                            for fn in files_:
-                                if not fn.lower().endswith(valid_ext):
-                                    continue
-                                if filter_substring and filter_substring.lower() not in fn.lower():
-                                    continue
-                                daftar_file.append(os.path.join(root, fn))
-                        daftar_file = sorted(daftar_file)[: int(batas_gambar_zip)]
+                    if not daftar_file:
+                        st.warning("Gak ada gambar yang cocok ditemukan di dalam zip (cek lagi filter nama-nya).")
 
-                        if not daftar_file:
-                            st.warning("Gak ada gambar yang cocok ditemukan di dalam zip (cek lagi filter nama-nya).")
-
-                        st.write(f"Ditemukan {len(daftar_file)} gambar yang cocok, mendaftarkan...")
-                        progress = st.progress(0)
-                        for i, path in enumerate(daftar_file):
-                            with open(path, "rb") as fh:
-                                file_bytes = fh.read()
-                            hasil = register_image_bytes(
-                                blockchain, file_bytes, os.path.basename(path), source_label="zip_upload"
-                            )
-                            if hasil["status"] == "terdaftar":
-                                st.success(f"✅ {hasil['filename']} — Block #{hasil['block_index']}")
-                            elif hasil["status"] == "duplikat":
-                                st.warning(f"⚠️ {hasil['filename']} — duplikat dari '{hasil['file_asli']}'")
-                            elif hasil["status"] == "gagal_simpan":
-                                st.error(f"🛑 {hasil['filename']} — GAGAL disimpan ke GCS: {hasil['error']}")
-                                st.error("Proses batch dihentikan — GCS kemungkinan sedang bermasalah, cek dulu sebelum lanjut.")
-                                break
-                            else:
-                                st.error(f"❌ {hasil['filename']} — gagal dibaca")
-                            progress.progress((i + 1) / max(1, len(daftar_file)))
+                    st.write(f"Ditemukan {len(daftar_file)} gambar yang cocok, mendaftarkan...")
+                    progress = st.progress(0)
+                    for i, (fname, fbytes) in enumerate(daftar_file):
+                        hasil = register_image_bytes(blockchain, fbytes, fname, source_label="zip_upload")
+                        if hasil["status"] == "terdaftar":
+                            st.success(f"✅ {hasil['filename']} — Block #{hasil['block_index']}")
+                        elif hasil["status"] == "duplikat":
+                            st.warning(f"⚠️ {hasil['filename']} — duplikat dari '{hasil['file_asli']}'")
+                        elif hasil["status"] == "gagal_simpan":
+                            st.error(f"🛑 {hasil['filename']} — GAGAL disimpan ke GCS: {hasil['error']}")
+                            st.error("Proses batch dihentikan — GCS kemungkinan sedang bermasalah, cek dulu sebelum lanjut.")
+                            break
+                        else:
+                            st.error(f"❌ {hasil['filename']} — gagal dibaca")
+                        progress.progress((i + 1) / max(1, len(daftar_file)))
 
                 except zipfile.BadZipFile:
                     st.error("File yang diupload bukan ZIP yang valid.")
@@ -205,19 +190,48 @@ if is_admin:
 # =========================================================================
 with tab_verifikasi:
     st.subheader("Verifikasi gambar suspek")
-    files_suspek = st.file_uploader(
-        "Upload gambar yang ingin dicek keasliannya",
-        type=["jpg", "jpeg", "png", "webp"],
-        accept_multiple_files=True,
-        key="upload_suspek",
+    sumber_verif = st.radio(
+        "Sumber gambar suspek",
+        ["Upload manual", "Upload ZIP (folder terkompresi)"],
+        horizontal=True,
+        key="sumber_verif",
     )
 
-    if st.button("Verifikasi", disabled=not files_suspek):
+    daftar_suspek = None  # list of (filename, bytes), diisi tergantung sumber yang dipilih
+
+    if sumber_verif == "Upload manual":
+        files_suspek = st.file_uploader(
+            "Upload gambar yang ingin dicek keasliannya",
+            type=["jpg", "jpeg", "png", "webp"],
+            accept_multiple_files=True,
+            key="upload_suspek",
+        )
+        if st.button("Verifikasi", disabled=not files_suspek):
+            daftar_suspek = [(f.name, f.read()) for f in files_suspek]
+
+    else:  # Upload ZIP
+        st.caption("Upload satu file .zip berisi banyak gambar suspek — folder/subfolder bertingkat otomatis dicari semua.")
+        zip_file_verif = st.file_uploader("Upload file .zip", type=["zip"], key="upload_zip_verif")
+        batas_verif_zip = st.number_input(
+            "Maksimal gambar yang diproses per klik", min_value=1, max_value=2000, value=200, key="batas_zip_verif"
+        )
+        if st.button("Ekstrak & Verifikasi ZIP", disabled=not zip_file_verif):
+            try:
+                with st.spinner("Mengekstrak ZIP..."):
+                    daftar_suspek = extract_images_from_zip(zip_file_verif, limit=batas_verif_zip)
+                if not daftar_suspek:
+                    st.warning("Gak ada gambar ditemukan di dalam zip.")
+            except zipfile.BadZipFile:
+                st.error("File yang diupload bukan ZIP yang valid.")
+            except Exception as e:
+                st.error(f"Gagal memproses ZIP: {e}")
+
+    if daftar_suspek:
         hasil_list = []
         progress = st.progress(0, text="Memverifikasi...")
-        for i, f in enumerate(files_suspek):
-            hasil_list.append(verify_image_bytes(blockchain, f.read(), f.name))
-            progress.progress((i + 1) / len(files_suspek))
+        for i, (fname, fbytes) in enumerate(daftar_suspek):
+            hasil_list.append(verify_image_bytes(blockchain, fbytes, fname))
+            progress.progress((i + 1) / len(daftar_suspek))
         progress.empty()
 
         # =============== RINGKASAN JUMLAH ===============
