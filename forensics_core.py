@@ -379,7 +379,7 @@ THRESHOLDS = dict(
     CANNY_HIGH=150,
     DILATE_SIZE_TEXT=3,
     MIN_VALID_FRACTION_TEXT=0.1,
-    TOLERANSI_TEKS_BARU=0.03,  # diturunkan dari 0.15 — kalibrasi lebih lanjut pakai debug_metrik_blok()
+    TOLERANSI_TEKS_BARU=0.01,  # diturunkan dari 0.15 — kalibrasi lebih lanjut pakai debug_metrik_blok()
     TOLERANSI_VARIANCE_HH=50.0,
 )
 
