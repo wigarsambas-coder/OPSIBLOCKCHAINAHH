@@ -28,16 +28,29 @@ def extract_block_hash(block_ycbcr):
     LL, _ = coeffs
     dct_y = fftpack.dct(fftpack.dct(LL.T, norm='ortho').T, norm='ortho')
 
-    dct_low = dct_y[0:16, 0:16]
-    phash_struktur = "".join(['1' if val > np.mean(dct_low) else '0' for val in dct_low.flatten()])
-    dct_mid = dct_y[16:32, 16:32]
+    # FIX #1: buang suku DC (index 0 hasil flatten) dari perhitungan mean —
+    # DC (~rata-rata kecerahan blok) besarnya bisa puluhan-ratusan kali lipat
+    # koefisien AC di sekitarnya, sehingga kalau ikut dihitung, mean-nya
+    # "ketarik" jauh ke atas dan hampir semua bit di kuadran ini otomatis
+    # kebaca '0' apa pun isi bloknya. Praktik standar pHash: threshold
+    # dihitung dari AC saja, DC-nya sendiri tetap dibandingkan seperti biasa.
+    dct_low_flat = dct_y[0:16, 0:16].flatten()
+    mean_low = np.mean(dct_low_flat[1:])
+    phash_struktur = "".join(['1' if val > mean_low else '0' for val in dct_low_flat])
+
+    dct_mid = dct_y[16:32, 16:32]  # gak mengandung DC (mulai dari index 16), gak perlu diubah
     phash_struktur += "".join(['1' if val > np.mean(dct_mid) else '0' for val in dct_mid.flatten()])
 
+    # FIX #2: tambah rata-rata Y (luma) per kuadran, bukan cuma Cr/Cb —
+    # watermark teks putih/abu-abu/hitam mengubah luma drastis tapi nyaris
+    # gak menggeser chroma (Cr/Cb netral untuk warna achromatic), jadi tanpa
+    # Y di sini 'warna_berubah' secara desain buta terhadap watermark teks.
     h, w = cr.shape
     half_h, half_w = h // 2, w // 2
     color_stats = []
     for (r0, r1) in [(0, half_h), (half_h, h)]:
         for (c0, c1) in [(0, half_w), (half_w, w)]:
+            color_stats.append(float(np.mean(y[r0:r1, c0:c1])))
             color_stats.append(float(np.mean(cr[r0:r1, c0:c1])))
             color_stats.append(float(np.mean(cb[r0:r1, c0:c1])))
 
@@ -342,7 +355,7 @@ THRESHOLDS = dict(
     CANNY_HIGH=150,
     DILATE_SIZE_TEXT=3,
     MIN_VALID_FRACTION_TEXT=0.1,
-    TOLERANSI_TEKS_BARU=0.15,
+    TOLERANSI_TEKS_BARU=0.03,  # diturunkan dari 0.15 — kalibrasi lebih lanjut pakai debug_metrik_blok()
     TOLERANSI_VARIANCE_HH=50.0,
 )
 
@@ -602,3 +615,35 @@ def extract_images_from_zip(zip_fileobj, filter_substring="", limit=None):
                 hasil.append((os.path.basename(path), fh.read()))
 
     return hasil
+
+
+# =========================================================================
+# UTILITAS KALIBRASI (opsional) — TIDAK dipanggil oleh alur registrasi/
+# verifikasi utama. Pakai manual dari notebook/shell kalau TOLERANSI_TEKS_BARU
+# (atau ambang lain) perlu disetel ulang untuk kasus tamper spesifik.
+# =========================================================================
+
+def debug_metrik_blok(path_asli, path_suspect, i=3, j=3):
+    """
+    Cetak metrik mentah 1 blok grid (default kanan-bawah, i=3,j=3) dari
+    sepasang file gambar lokal — buat nyari ambang yang pas sebelum ubah
+    THRESHOLDS asal nebak. Bandingkan hasilnya di:
+    (a) gambar asli vs versi yang ditamper (mis. ditambah watermark), dan
+    (b) gambar asli vs versi yang cuma di-resave/dikompres ulang TANPA tamper
+        — supaya tahu ambang aman yang gak salah tandai kompresi normal.
+    """
+    def proses(path):
+        with open(path, "rb") as f:
+            arr = np.frombuffer(f.read(), np.uint8)
+        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        img_ycbcr = preprocess_image(img)
+        mask = build_text_mask(img_ycbcr, 50, 150, 3)
+        HH = compute_hh_subband(img_ycbcr)
+        return compute_masked_block_stats(HH, 1.0 - mask, grid_size=4, min_valid_fraction=0.1)
+
+    vp_a, var_a = proses(path_asli)
+    vp_s, var_s = proses(path_suspect)
+    total_blok = (256 // 4) ** 2  # HH 256x256 (dari preprocess 512x512), dibagi grid 4x4
+    penyusutan = (vp_a[i][j] - vp_s[i][j]) / total_blok
+    print(f"valid_pixels  asli={vp_a[i][j]:.0f}  suspect={vp_s[i][j]:.0f}  -> penyusutan={penyusutan:.4f}")
+    print(f"variance      asli={var_a[i][j]:.2f}  suspect={var_s[i][j]:.2f}  -> delta={abs(var_a[i][j]-var_s[i][j]):.2f}")
