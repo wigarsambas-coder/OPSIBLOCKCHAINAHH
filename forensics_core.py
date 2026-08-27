@@ -340,6 +340,30 @@ class SecureBlockchain:
                 return True
         return False
 
+    def soft_delete_blocks(self, indices, deleted_by=None):
+        """
+        Hapus (soft-delete) BANYAK block sekaligus dengan CUMA SATU KALI
+        panggilan save_db() di akhir — beda dari manggil soft_delete_block()
+        satu-satu dalam loop, yang berarti satu kali round-trip ke GCS per
+        block (lambat kalau jumlahnya ratusan). Di sini semua ditandai dulu
+        di memori, baru sekali nulis ke GCS.
+
+        indices: iterable of int (block.index yang mau dihapus)
+        Return: jumlah block yang berhasil ditandai terhapus.
+        """
+        indices_set = set(indices)
+        jumlah = 0
+        for block in self.chain:
+            if block.index in indices_set and not block.metadata.get("deleted"):
+                block.metadata["deleted"] = True
+                block.metadata["deleted_at"] = time.time()
+                if deleted_by:
+                    block.metadata["deleted_by"] = deleted_by
+                jumlah += 1
+        if jumlah > 0:
+            self.save_db()  # SATU kali aja, bukan per-block
+        return jumlah
+
 #---------------
 #Alur registrasi
 #---------------
