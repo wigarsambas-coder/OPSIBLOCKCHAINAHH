@@ -271,8 +271,8 @@ with tab_verifikasi:
         c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("Total diproses", len(hasil_list))
         c2.metric("✅ Real", jumlah_real)
-        c3.metric("❌ Fake (Tamper Ringan)", jumlah_fake)
-        c4.metric("❓ Unknown (Tamper Berat)", jumlah_tidak_dikenali)
+        c3.metric("❌ Fake", jumlah_fake)
+        c4.metric("❓ Tidak dikenali", jumlah_tidak_dikenali)
         c5.metric("⚠️ Gagal dibaca", jumlah_gagal)
 
         t1, t2 = st.columns(2)
@@ -330,12 +330,46 @@ if is_admin:
         tampilkan_terhapus = st.checkbox("Tampilkan juga yang sudah dihapus", value=False)
 
         entri = [b for b in blockchain.chain[1:] if tampilkan_terhapus or not b.metadata.get("deleted")]
+        entri_aktif = [b for b in blockchain.chain[1:] if not b.metadata.get("deleted")]
+
         if not entri:
             st.info("Belum ada citra terdaftar.")
 
+        # ================= HAPUS SEMUA SEKALIGUS =================
+        if entri_aktif:
+            with st.expander(f"🗑️ Hapus SEMUA entri aktif sekaligus ({len(entri_aktif)} entri)"):
+                st.warning(
+                    "Menandai SEMUA entri aktif sebagai terhapus dalam SATU kali simpan ke GCS "
+                    "(cepat, gak peduli berapa banyak entrinya). Masih bisa dipulihkan satu-satu "
+                    "lewat tombol 'Pulihkan' kalau keliru."
+                )
+                konfirmasi = st.text_input(
+                    'Ketik "HAPUS SEMUA" (persis) untuk mengaktifkan tombolnya', key="konfirmasi_hapus_semua"
+                )
+                if st.button("Hapus SEMUA entri aktif", disabled=(konfirmasi != "HAPUS SEMUA")):
+                    try:
+                        with st.spinner(f"Menghapus {len(entri_aktif)} entri..."):
+                            jumlah = blockchain.soft_delete_blocks(
+                                [b.index for b in entri_aktif], deleted_by=st.user.email
+                            )
+                        st.success(f"✅ {jumlah} entri berhasil dihapus (1 kali simpan ke GCS).")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"🛑 Gagal menghapus: {e}")
+
+        st.divider()
+
+        # ================= HAPUS TERPILIH (checkbox) =================
+        st.caption("Atau centang beberapa entri di bawah, lalu hapus sekaligus:")
+
+        terpilih_untuk_hapus = []
         for block in entri:
             is_deleted = bool(block.metadata.get("deleted"))
-            col1, col2, col3 = st.columns([3, 2, 1])
+            col0, col1, col2, col3 = st.columns([0.4, 3, 2, 1])
+            with col0:
+                if not is_deleted:
+                    if st.checkbox("pilih", key=f"pilih_{block.index}", label_visibility="collapsed"):
+                        terpilih_untuk_hapus.append(block.index)
             with col1:
                 label = block.metadata.get("filename", "Unknown")
                 st.markdown(f"~~{label}~~ *(dihapus)*" if is_deleted else label)
@@ -354,3 +388,14 @@ if is_admin:
                     if st.button("Hapus", key=f"delete_{block.index}"):
                         blockchain.soft_delete_block(block.index, deleted_by=st.user.email)
                         st.rerun()
+
+        if terpilih_untuk_hapus:
+            st.divider()
+            if st.button(f"🗑️ Hapus {len(terpilih_untuk_hapus)} entri yang dicentang"):
+                try:
+                    with st.spinner(f"Menghapus {len(terpilih_untuk_hapus)} entri..."):
+                        jumlah = blockchain.soft_delete_blocks(terpilih_untuk_hapus, deleted_by=st.user.email)
+                    st.success(f"✅ {jumlah} entri berhasil dihapus (1 kali simpan ke GCS).")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"🛑 Gagal menghapus: {e}")
