@@ -230,6 +230,12 @@ class SecureBlockchain:
         self._bucket = self._client.bucket(bucket_name)
         self.chain = []
         self.bk_tree = BKTree()
+        # Cache matriks numpy buat pencarian cepat (lihat find_best_match/
+        # _build_hash_matrix di bawah) — None berarti "belum dibangun/basi,
+        # bangun ulang pas dibutuhkan". None di sini WAJIB di-set SEBELUM
+        # load_db() dipanggil.
+        self._hash_matrix = None
+        self._hash_matrix_block_indices = None
         self.load_db()
 
     # JANGAN dibungkus try/except-diam-diam lagi di sini — kalau GCS gagal,
@@ -278,19 +284,56 @@ class SecureBlockchain:
         return self.chain[-1]
 
     def check_duplicate(self, grid_hashes, threshold=0):
-        new_flat_hash = ("".join([str(h) for row in grid_hashes for h in row])
-                          if isinstance(grid_hashes[0], list) else "".join(grid_hashes))
-        for block in self.chain[1:]:
-            if block.metadata.get("deleted"):
-                continue
-            if not block.grid_hashes:
-                continue
-            block_flat_hash = ("".join([str(h) for row in block.grid_hashes for h in row])
-                                if isinstance(block.grid_hashes[0], list) else "".join(block.grid_hashes))
-            dist = calculate_hamming_distance(new_flat_hash, block_flat_hash)
-            if dist <= threshold:
-                return True, block
+        best_block, best_hd = self.find_best_match(grid_hashes)
+        if best_block is not None and best_hd <= threshold:
+            return True, best_block
         return False, None
+
+    def _invalidate_hash_cache(self):
+        self._hash_matrix = None
+        self._hash_matrix_block_indices = None
+
+    def _build_hash_matrix(self):
+        """
+        Bangun ulang matriks numpy dari SEMUA hash block aktif (bukan yang
+        dihapus). Ini yang dibikin sekali per PERUBAHAN chain (register/hapus/
+        pulihkan) — bukan sekali per pencarian — supaya biayanya diamortisasi.
+        """
+        aktif = [b for b in self.chain[1:] if not b.metadata.get("deleted") and b.grid_hashes]
+        if not aktif:
+            self._hash_matrix = np.zeros((0, 0), dtype=np.uint8)
+            self._hash_matrix_block_indices = []
+            return
+
+        def flat_array(grid_hashes):
+            flat_str = "".join(h for row in grid_hashes for h in row)
+            return np.frombuffer(flat_str.encode("ascii"), dtype=np.uint8) - ord('0')
+
+        rows = [flat_array(b.grid_hashes) for b in aktif]
+        self._hash_matrix = np.stack(rows)
+        self._hash_matrix_block_indices = [b.index for b in aktif]
+
+    def find_best_match(self, grid_hashes_suspect):
+        """
+        Cari block dengan total Hamming distance TERKECIL ke grid_hashes_suspect,
+        pakai SATU operasi numpy vektor ke SELURUH entri sekaligus — jauh lebih
+        cepat daripada loop Python band per-block. Return (best_block, total_hd)
+        atau (None, None) kalau ledger (aktif) kosong.
+        """
+        if self._hash_matrix is None:
+            self._build_hash_matrix()
+        if self._hash_matrix.shape[0] == 0:
+            return None, None
+
+        flat_str = "".join(h for row in grid_hashes_suspect for h in row)
+        query = np.frombuffer(flat_str.encode("ascii"), dtype=np.uint8) - ord('0')
+
+        distances = np.count_nonzero(self._hash_matrix != query, axis=1)
+        best_i = int(np.argmin(distances))
+        best_index = self._hash_matrix_block_indices[best_i]
+        best_hd = int(distances[best_i])
+        best_block = next(b for b in self.chain if b.index == best_index)
+        return best_block, best_hd
 
     def register_image(self, grid_hashes, metadata, grid_colors=None,
                         text_valid_pixels_map=None, text_variance_map=None):
@@ -314,6 +357,7 @@ class SecureBlockchain:
             # state gak "pura-pura sukses" padahal belum benar-benar tersimpan.
             self.chain.pop()
             raise RuntimeError(f"Gagal menyimpan ke Google Cloud Storage: {e}") from e
+        self._invalidate_hash_cache()
         return new_block, None
 
     def soft_delete_block(self, index, deleted_by=None):
@@ -325,6 +369,7 @@ class SecureBlockchain:
                 if deleted_by:
                     block.metadata["deleted_by"] = deleted_by
                 self.save_db()
+                self._invalidate_hash_cache()
                 return True
         return False
 
@@ -337,6 +382,7 @@ class SecureBlockchain:
                 block.metadata.pop("deleted_at", None)
                 block.metadata.pop("deleted_by", None)
                 self.save_db()
+                self._invalidate_hash_cache()
                 return True
         return False
 
@@ -362,6 +408,7 @@ class SecureBlockchain:
                 jumlah += 1
         if jumlah > 0:
             self.save_db()  # SATU kali aja, bukan per-block
+            self._invalidate_hash_cache()
         return jumlah
 
 #---------------
@@ -476,22 +523,8 @@ def verify_image_bytes(blockchain, file_bytes, filename):
     )
     total_pixel_blok_hh = (HH_suspect.shape[0] // 4) * (HH_suspect.shape[1] // 4)
 
-    best_match_block = None
-    min_total_hd = float('inf')
     TOTAL_BITS_STRUKTUR = 16 * 512
-    for block in blockchain.chain[1:]:
-        if block.metadata.get("deleted"):
-            continue
-        block_grid_hashes = block.grid_hashes
-        if not block_grid_hashes:
-            continue
-        total_hd = 0
-        for i in range(4):
-            for j in range(4):
-                total_hd += calculate_hamming_distance(block_grid_hashes[i][j], hash_suspect[i][j])
-        if total_hd < min_total_hd:
-            min_total_hd = total_hd
-            best_match_block = block
+    best_match_block, min_total_hd = blockchain.find_best_match(hash_suspect)
 
     if best_match_block is None:
         return {"status": "tidak_cocok", "filename": filename, "durasi_proses": time.perf_counter() - t0}
