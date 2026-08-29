@@ -271,8 +271,8 @@ with tab_verifikasi:
         c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("Total diproses", len(hasil_list))
         c2.metric("✅ Real", jumlah_real)
-        c3.metric("❌ Fake", jumlah_fake)
-        c4.metric("❓ Tidak dikenali", jumlah_tidak_dikenali)
+        c3.metric("❌ Edit Ringan", jumlah_fake)
+        c4.metric("❓ Edit Berat", jumlah_tidak_dikenali)
         c5.metric("⚠️ Gagal dibaca", jumlah_gagal)
 
         t1, t2 = st.columns(2)
